@@ -64,11 +64,17 @@ public class OGCmdExecuter {
      * CmdResult
      */
     public static CmdResult execCmd(String command) {
+        logger.debug("Excuting command: {}.",command);
+        String[] cmd = new String[]{"/bin/sh", "-c", command};
+        Process process = null;
         try {
-            logger.debug("Excuting command: {}.",command);
-            String[] cmd = new String[]{"/bin/sh", "-c", command};
-            Process process = Runtime.getRuntime().exec(cmd);
-            BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            process = Runtime.getRuntime().exec(cmd);
+        } catch (IOException e) {
+            e.printStackTrace();
+            logger.error("Exception happend when excute shell command: {}.\nDetail:\n{}", command, e);
+            return null;
+        }
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             StringBuffer sb = new StringBuffer();
             String line;
             while ((line = br.readLine()) != null) {

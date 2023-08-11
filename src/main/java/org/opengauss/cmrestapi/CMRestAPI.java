@@ -163,13 +163,12 @@ public class CMRestAPI {
      * void
      */
     public static void getAppWhiteList() {
-        try {
-            if (appWhiteList == null) {
-                appWhiteList = new HashSet<String>();
-            } else {
-                appWhiteList.clear();
-            }
-            BufferedReader br = new BufferedReader(new FileReader(appWhiteListFile));
+        if (appWhiteList == null) {
+            appWhiteList = new HashSet<String>();
+        } else {
+            appWhiteList.clear();
+        }
+        try (BufferedReader br = new BufferedReader(new FileReader(appWhiteListFile))) {
             String line = null;
             while ((line = br.readLine()) != null) {
                 appWhiteList.add(line);
