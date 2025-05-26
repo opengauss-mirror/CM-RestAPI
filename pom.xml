@@ -10,7 +10,7 @@
     </parent>
     <groupId>org.opengauss</groupId>
     <artifactId>cmrestapi</artifactId>
-    <version>7.0.0-RC1-RELEASE</version>
+    <version>7.0.0-RC2-RELEASE</version>
     <name>CMRestAPI</name>
     <description>Project for CMRestAPI</description>
     <properties>
