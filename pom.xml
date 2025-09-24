@@ -15,9 +15,9 @@
     <description>Project for CMRestAPI</description>
     <properties>
         <java.version>17</java.version>
-        <spring-framework.version>6.1.14</spring-framework.version>
+        <spring-framework.version>6.2.11</spring-framework.version>
         <logback.version>1.5.18</logback.version>
-        <tomcat.version>10.1.40</tomcat.version>
+        <tomcat.version>10.1.46</tomcat.version>
     </properties>
     <dependencies>
         <dependency>
@@ -37,7 +37,7 @@
         <dependency>
             <groupId>org.apache.tomcat.embed</groupId>
             <artifactId>tomcat-embed-core</artifactId>
-            <version>10.1.40</version>
+            <version>10.1.46</version>
         </dependency>
         <dependency>
             <groupId>com.google.code.gson</groupId>
