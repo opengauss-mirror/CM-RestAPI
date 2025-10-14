@@ -38,11 +38,15 @@ import java.util.regex.Pattern;
  * Created on: 2022/09/07
  */
 public class CMRestAPI {
+    /**
+     * api prefix
+     */
+    public static final String PREFIX = "/CMRestAPI/RecvAddrList/";
+
     public final String APPLICATION_NAME = "CMRestAPI";
     public static String envFile;
     public static String dataPath;
     public static List<String> recvAddrList;
-    public static String prefix = "/CMRestAPI/RecvAddrList/";
     public static String hostIp = null;
     public static String port = null;
     public static int nodeId;
@@ -50,7 +54,8 @@ public class CMRestAPI {
     public static OGCmdExecuter ogCmdExecuter = null;
     public static String appWhiteListFile = null;
     public static HashSet<String> appWhiteList = null;
-    public static Long lastModified = 0l;
+
+    private static Long lastModified = 0L;
     private static Logger logger = LoggerFactory.getLogger(CMRestAPI.class);
     private static final String CHECK_GAUSSDB_PROCESS_CMD = 
             "ps ux | grep -v grep | grep \"bin/gaussdb -D \" | awk '{print $2}'";
