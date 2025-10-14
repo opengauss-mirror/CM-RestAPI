@@ -17,6 +17,7 @@ package org.opengauss.cmrestapi;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -74,7 +75,8 @@ public class OGCmdExecuter {
             logger.error("Exception happend when excute shell command: {}.\nDetail:\n{}", command, e);
             return null;
         }
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+        try (BufferedReader br = new BufferedReader(
+            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             StringBuffer sb = new StringBuffer();
             String line;
             while ((line = br.readLine()) != null) {
@@ -278,7 +280,7 @@ public class OGCmdExecuter {
      * CmdResult
      */
     public CmdResult deleteRecvAddr(String clientIp, String app) {
-        String key = CMRestAPI.prefix + clientIp;
+        String key = CMRestAPI.PREFIX + clientIp;
         if (app == null || "".equals(app)) {
             return cmctlDdbDeletePrefix(key);
         }
@@ -294,12 +296,12 @@ public class OGCmdExecuter {
      * Map<String,String>: [.., {"clientIp/app", recvAddr}, ..]
      */
     public Map<String, String> getRecvAddrList() {
-        CmdResult cmdResult = cmctlDdbGetPrefix(CMRestAPI.prefix);
+        CmdResult cmdResult = cmctlDdbGetPrefix(CMRestAPI.PREFIX);
         if (cmdResult.statusCode != 0 || cmdResult.resultString.matches("Key not found")) {
             return null;
         }
         Map<String, String> clientIpRecvAddrMap = new HashMap<>();
-        Pattern pattern = Pattern.compile(CMRestAPI.prefix + "(.*[\\s]+.*)[\\s]+?");
+        Pattern pattern = Pattern.compile(CMRestAPI.PREFIX + "(.*[\\s]+.*)[\\s]+?");
         Matcher matcher = pattern.matcher(cmdResult.resultString);
         while (matcher.find()) {
             String keyValue = matcher.group(1);
@@ -320,7 +322,7 @@ public class OGCmdExecuter {
      * CmdResult
      */
     public CmdResult saveRecvAddr(String clientIp, String app, String recvAddr) {
-        String key = CMRestAPI.prefix + clientIp;
+        String key = CMRestAPI.PREFIX + clientIp;
         if (app != null && !"".equals(app)) {
             key += "/" + app;
         }
