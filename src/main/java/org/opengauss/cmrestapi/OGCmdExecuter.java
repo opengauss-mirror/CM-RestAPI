@@ -96,6 +96,10 @@ public class OGCmdExecuter {
         return "cm_ctl " + action + " " + options;
     }
 
+    private String getGrcmdCmd(String action, String options) {
+        return "grcmd " + action + " " + options;
+    }
+
     /**
      * @Title: gsctlQuery
      * @Description:
@@ -113,12 +117,24 @@ public class OGCmdExecuter {
      * @Title: cmctlQuery
      * @Description:
      * cm_ctl query 
+     * @return
+     * CmdResult
+     */
+    public CmdResult cmctlQuery() {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("query", " -Cvipdw");
+        return execCmd(cmd);
+    }
+    
+    /**
+     * @Title: cmctlQuery
+     * @Description:
+     * cm_ctl query with options
      * @param options
      * @return
      * CmdResult
      */
     public CmdResult cmctlQuery(String options) {
-        String cmd = SOURCE_ENV_CMD + "timeout 5 " + getCmctlCmd("query", options);
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("query", options);
         return execCmd(cmd);
     }
     
@@ -209,6 +225,153 @@ public class OGCmdExecuter {
         return cmctlDdb("--put", false, key, value);
     }
 
+    // reload cm config
+    public CmdResult reloadCmConfig(String mode) {
+        if ("agent".equals(mode)) {
+            return reloadCmAgentConfig();
+        } else if ("server".equals(mode)) {
+            return reloadCmServerConfig();
+        }
+        return new CmdResult(-1, "invalid mode");
+    }
+
+    // reload cm agent config
+    public CmdResult reloadCmAgentConfig() {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("reload ", " --param --agent");
+        return execCmd(cmd);
+    }
+
+    // reload cm server config
+    public CmdResult reloadCmServerConfig() {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("reload ", " --param --server");
+        return execCmd(cmd);
+    }
+
+    // set cm config
+    public CmdResult setCmConfig(String mode, String key, String value) {
+        if ("agent".equals(mode)) {
+            return setCmAgentConfig(key, value);
+        } else if ("server".equals(mode)) {
+            return setCmServerConfig(key, value);
+        }
+        return new CmdResult(-1, "invalid mode");
+    }
+
+    // set cm agent config
+    public CmdResult setCmAgentConfig(String key, String value) {
+        String trimmedKey = (key != null) ? key.trim() : "";
+        String trimmedValue = (value != null) ? value.trim() : "";
+        String cmd = SOURCE_ENV_CMD + "cm_ctl set --param --agent -k \"" + trimmedKey + "=" + trimmedValue + "\"";
+        return execCmd(cmd);
+    }
+
+    // set cm server config
+    public CmdResult setCmServerConfig(String key, String value) {
+        String trimmedKey = (key != null) ? key.trim() : "";
+        String trimmedValue = (value != null) ? value.trim() : "";
+        String cmd = SOURCE_ENV_CMD + "cm_ctl set --param --server -k \"" + trimmedKey + "=" + trimmedValue + "\"";
+        return execCmd(cmd);
+    }
+
+    // get cm config
+    public CmdResult getCmConfig(String mode, String key) {
+        if ("agent".equals(mode)) {
+            return getCmAgentConfig(key);
+        } else if ("server".equals(mode)) {
+            return getCmServerConfig(key);
+        }
+        return new CmdResult(-1, "invalid mode");
+    }
+
+    // get cm agent config
+    public CmdResult getCmAgentConfig(String key) {
+        // cm_ctl list --param --agent | grep key
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("list --param --agent | grep " + key, "");
+        return execCmd(cmd);
+    }
+
+    // get cm server config
+    public CmdResult getCmServerConfig(String key) {
+        // cm_ctl list --param --server | grep key
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("list --param --server | grep " + key, "");
+        return execCmd(cmd);
+    }
+
+    // set gr config
+    public CmdResult setGrConfig(String key, String value) {
+        String cmd = SOURCE_ENV_CMD + getGrcmdCmd("setcfg ", "-n " + key + " -v " + value) + " -s both";
+        return execCmd(cmd);
+    }
+
+    // get gr config
+    public CmdResult getGrConfig(String key) {
+        String cmd = SOURCE_ENV_CMD + getGrcmdCmd("getcfg ", "-n " + key);
+        return execCmd(cmd);
+    }
+
+    // stop cluster
+    public CmdResult stopCluster() {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("stop", "");
+        return execCmd(cmd);
+    }
+
+    // stop node
+    public CmdResult stopNode(String nodeId) {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("stop -n ", nodeId);
+        return execCmd(cmd);
+    }
+
+    // start cluster
+    public CmdResult startCluster() {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("start", "");
+        return execCmd(cmd);
+    }
+
+    // start node
+    public CmdResult startNode(String nodeId) {
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("start -n ", nodeId);
+        return execCmd(cmd);
+    }
+
+    // switchover
+    public CmdResult cmctlSwitchover(String nodeId) {
+        String option;
+        if (CMRestAPI.isOGRecorder) {
+            option = "";
+        } else {
+            option = " -D $PGDATA";
+        }
+        String cmd = SOURCE_ENV_CMD + getCmctlCmd("switchover -n ", nodeId) + option;
+        return execCmd(cmd);
+    }
+
+    // switchover node
+    public CmdResult switchover(String nodeId) {
+        return cmctlSwitchover(nodeId);
+    }
+
+    // get gr data usage result
+    public CmdResult grcmdDataUsage() {
+        String cmd = SOURCE_ENV_CMD + getGrcmdCmd("datausage", "");
+        return execCmd(cmd);
+    }
+
+    // get gr data usage
+    public CmdResult datausage() {
+        return grcmdDataUsage();
+    }
+
+    // get gr status
+    public CmdResult getstatus() {
+        String cmd = SOURCE_ENV_CMD + getGrcmdCmd("getstatus", "");
+        return execCmd(cmd);
+    }
+
+    // get gr performance
+    public CmdResult performance() {
+        String cmd = SOURCE_ENV_CMD + getGrcmdCmd("ts", "");
+        return execCmd(cmd);
+    }
     /**
      * @Title: cmctlDdbGet
      * @Description:

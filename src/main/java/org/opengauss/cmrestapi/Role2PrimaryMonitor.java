@@ -14,6 +14,7 @@
  */
 package org.opengauss.cmrestapi;
 
+import java.io.File;
 import java.util.Map;
 import java.util.Collection;
 import java.util.regex.Matcher;
@@ -46,13 +47,13 @@ public class Role2PrimaryMonitor implements Runnable {
     }
 
     /**
-     * @Title: Role2Primary
+     * @Title: gaussdbRoleChanged2Primary
      * @Description:
-     * Check whether dn role change to primary.
+     * Check whether gaussdb role change to primary.
      * @return
      * boolean
      */
-    private boolean roleChanged2Primary() {
+    private boolean gaussdbRoleChanged2Primary() {
         CmdResult cmdResult = ogCmdExecuter.gsctlQuery();
         if (cmdResult.statusCode != 0) {
             logger.error("Exec gs_ctl query cmd failed!");
@@ -77,6 +78,75 @@ public class Role2PrimaryMonitor implements Runnable {
         }
         return false;
     }
+
+     /**
+     * @Title: grserverRoleChanged2Primary
+     * @Description:
+     * Check whether grserver role change to primary.
+     * @return
+     * boolean
+     */
+    private boolean grserverRoleChanged2Primary() {
+        CmdResult cmdResult = ogCmdExecuter.getstatus();
+        if (cmdResult == null || cmdResult.statusCode != 0) {
+            if (new File("$GAUSSHOME/bin/cluster_manual_start").exists()) {
+                return false;
+            }
+            logger.error("failed to get oGRecorder status! Status code: {}",
+                        cmdResult != null ? cmdResult.statusCode : "null");
+            return false;
+        }
+
+        if (cmdResult.resultString == null || cmdResult.resultString.trim().isEmpty()) {
+            logger.error("grcmd getstatus returned empty result");
+            return false;
+        }
+
+        String localRole = parseGrserverRole(cmdResult.resultString);
+
+        if (localRole == null) {
+            logger.warn("Unable to parse role from grcmd output: {}", cmdResult.resultString);
+            return false;
+        }
+
+        if (!localRole.equals(currentLocalRole)) {
+            String oldRole = currentLocalRole;
+            currentLocalRole = localRole;
+
+            logger.info("GRServer role changed from {} to {}", oldRole, localRole);
+
+            if ("Primary".equals(localRole)) {
+                logger.info("Role change to primary happened, current node becomes to primary! "
+                        + "Current master ip:port={}.", masterIpPort);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private String parseGrserverRole(String statusOutput) {
+        if (statusOutput == null) {
+            return null;
+        }
+
+        if (statusOutput.contains("GR_MAINTAIN is TRUE")) {
+            logger.info("test2");
+            return null;
+        }
+
+        Pattern pattern = Pattern.compile("is (.+? and (READONLY|READWRITE))");
+        Matcher matcher = pattern.matcher(statusOutput);
+        if (matcher.find()) {
+            String fullStatus = matcher.group(1).toLowerCase();
+            if (fullStatus.contains("readwrite")) {
+                return "Primary";
+            } else if (fullStatus.contains("readonly")) {
+                return "Standby";
+            }
+        }
+        return null;
+    }
     
     /**
      * @Title: run
@@ -90,7 +160,12 @@ public class Role2PrimaryMonitor implements Runnable {
         try {
             for (;;) {
                 Thread.sleep(1000);
-                boolean hasRoleChanged2Priamry = roleChanged2Primary();
+                boolean hasRoleChanged2Priamry;
+                if (CMRestAPI.isOGRecorder) {
+                    hasRoleChanged2Priamry = grserverRoleChanged2Primary();
+                } else {
+                    hasRoleChanged2Priamry = gaussdbRoleChanged2Primary();
+                }
                 if (!hasRoleChanged2Priamry) {
                     continue;
                 }

@@ -54,11 +54,15 @@ public class CMRestAPI {
     public static OGCmdExecuter ogCmdExecuter = null;
     public static String appWhiteListFile = null;
     public static HashSet<String> appWhiteList = null;
+    // Flag indicating whether the current instance is oGRecorder (grserver) or GaussDB (gaussdb).
+    public static boolean isOGRecorder = false;
 
     private static Long lastModified = 0L;
     private static Logger logger = LoggerFactory.getLogger(CMRestAPI.class);
-    private static final String CHECK_GAUSSDB_PROCESS_CMD = 
+    private static final String CHECK_GAUSSDB_PROCESS_CMD =
             "ps ux | grep -v grep | grep \"bin/gaussdb -D \" | awk '{print $2}'";
+    private static final String CHECK_GRSERVER_PROCESS_CMD =
+            "ps ux | grep -v grep | grep \"bin/grserver -D \" | awk '{print $2}'";
     /**
      * @Title: main
      * @Description:
@@ -71,8 +75,12 @@ public class CMRestAPI {
         parseAndCheckCmdLine(args);
         checkEnvfileAndDataPath();
         ogCmdExecuter = new OGCmdExecuter(envFile);
-        if (!checkGaussdbRunning()) {
-            logger.error("Gaussdb is not running, waiting for more than 30s, exit!");
+        if (!checkProcessRunning()) {
+            if (isOGRecorder) {
+                logger.error("Grserver is not running, waiting for more than 30s, exit!");
+            } else {
+                logger.error("Gaussdb is not running, waiting for more than 30s, exit!");
+            }
             System.exit(ErrorCode.ESRCH.getCode());
         }
         getClusterStaticInfo();
@@ -80,6 +88,7 @@ public class CMRestAPI {
             checkAppWhiteListFile();
             getAppWhiteList();
         }
+
         new Role2PrimaryMonitor().start();
         new InfoQueryThread().start();
     }
@@ -127,8 +136,15 @@ public class CMRestAPI {
             logger.error("{} is not exist!", envFile);
             System.exit(ErrorCode.ENOENT.getCode());
         }
-        String cmd = "source " + envFile + "; gaussdb -V";
-        CmdResult cmdResult = OGCmdExecuter.execCmd(cmd);
+        String cmd;
+        CmdResult cmdResult;
+        if (isOGRecorder) {
+            cmd = "source " + envFile + "; grcmd -v";
+            cmdResult = OGCmdExecuter.execCmd(cmd);
+        } else {
+            cmd = "source " + envFile + "; gaussdb -V";
+            cmdResult = OGCmdExecuter.execCmd(cmd);
+        }
         if (cmdResult == null || cmdResult.statusCode != 0) {
             logger.error("env file {} is invalid!", envFile);
             System.exit(ErrorCode.EINVAL.getCode());
@@ -185,16 +201,21 @@ public class CMRestAPI {
         }
     }
     
-    private static boolean checkGaussdbRunning() {
+    private static boolean checkProcessRunning() {
         boolean isRunning = false;
         for (int i = 0; i < 10; ++i) {
-            CmdResult cmdResult = OGCmdExecuter.execCmd(CHECK_GAUSSDB_PROCESS_CMD);
+            CmdResult cmdResult;
+            if (isOGRecorder) {
+                cmdResult = OGCmdExecuter.execCmd(CHECK_GRSERVER_PROCESS_CMD);
+            } else {
+                cmdResult = OGCmdExecuter.execCmd(CHECK_GAUSSDB_PROCESS_CMD);
+            }
             if (cmdResult != null && cmdResult.statusCode == 0 &&
                     !"".equals(cmdResult.resultString)) {
                 isRunning = true;
                 break;
             }
-            logger.info("gaussdb is not running, waiting");
+            logger.info("process is not running, waiting");
             try {
                 Thread.sleep(6000);
             } catch (InterruptedException e) {
@@ -217,6 +238,9 @@ public class CMRestAPI {
                 break;
             case "-w":
                 appWhiteListFile = args[++i];
+                break;
+            case "-g":
+                isOGRecorder = true;
                 break;
             default:
                 System.out.println("option " + args[i] + " is not support");
