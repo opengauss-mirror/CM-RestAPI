@@ -53,6 +53,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
+import com.google.gson.Gson;
 
 /**
  * @Title: CMRestAPIServer
@@ -121,44 +122,27 @@ public class CMRestAPIServer {
     }
 
     /**
-     * @Title: AnalysisInfo
-     * @Description: Analysis information for GR status
-     */
-    class AnalysisInfo {
-        String instance_health;
-        String read_write_mode;
-        String node_role;
-        public AnalysisInfo(String instance_health, String read_write_mode, String node_role) {
-            this.instance_health = instance_health;
-            this.read_write_mode = read_write_mode;
-            this.node_role = node_role;
-        }
-    }
-
-    /**
      * @Title: GrStatus
-     * @Description: GR status response structure
+     * @Description: GR status response structure (flattened format)
      */
     class GrStatus {
         String node;
-        String timestamp;
-        String status;
-        StatusInfo instance_status;
-        StatusInfo server_status;
+        String instance_status;
+        String server_status;
         int local_instance_id;
         int master_id;
-        AnalysisInfo analysis;
-        public GrStatus(String node, String timestamp, String status,
-                       StatusInfo instance_status, StatusInfo server_status,
-                       int local_instance_id, int master_id, AnalysisInfo analysis) {
+        String maintainMode;
+        String node_role;
+        public GrStatus(String node, String instance_status, String server_status,
+                       int local_instance_id, int master_id,
+                       String maintainMode, String node_role) {
             this.node = node;
-            this.timestamp = timestamp;
-            this.status = status;
             this.instance_status = instance_status;
             this.server_status = server_status;
             this.local_instance_id = local_instance_id;
             this.master_id = master_id;
-            this.analysis = analysis;
+            this.maintainMode = maintainMode;
+            this.node_role = node_role;
         }
     }
 
@@ -525,32 +509,80 @@ public class CMRestAPIServer {
      * @return
      * ResponseEntity<String>
      */
-    @GetMapping("/NodeStatus")
+    @GetMapping("/oGNodeStatus")
     ResponseEntity<String> getNodeStatus(HttpServletRequest request,
             @RequestParam(value="nodeId", required = false, defaultValue = "0")int nodeId) {
         String clientIp = getClientIp(request);
         logger.info("Received get node status request from {}", clientIp);
         if (!checkAppWhiteList(clientIp)) {
             logger.error(HttpStatus.UNAUTHORIZED.toString() + "client " + clientIp);
-            return buildErrorResponse(401, "Unauthorized access", HttpStatus.UNAUTHORIZED);
+            return ResponseEntity
+                    .status(HttpStatus.UNAUTHORIZED)
+                    .body(HttpStatus.UNAUTHORIZED.toString());
+        }
+        if (nodeId == 0) {
+            nodeId = CMRestAPI.nodeId;
+        }
+        CmdResult cmdResult = ogCmdExcuter.getNodeStatus(nodeId);
+        if (cmdResult == null) {
+            return ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("{\"msg\": \"Exec query command failed!\"}");
+        }
+        if (cmdResult.statusCode != 0) {
+            String msg = null;
+            if (cmdResult.statusCode == 124) {
+                msg = "{\"msg\": \"Exec query command timeout!\"}";
+            } else {
+                msg = cmdResult.resultString;
+            }
+            return ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(msg);
+        }
+        NodeStatus nodeStatus = null;
+        if (cmdResult.resultString != null && !cmdResult.resultString.trim().isEmpty()) {
+            String nodeIp = CMRestAPI.matchRegex("node_ip.*: (.*)\\s+", cmdResult.resultString);
+            String cmServerState = CMRestAPI.matchRegex("type.*CMServer\\s+instance_state.*: (.*)\\s+",
+                                                        cmdResult.resultString);
+            String dnRole = CMRestAPI.matchRegex("type.*Datanode\\s+instance_state.*: (.*)\\s+",
+                                                        cmdResult.resultString);
+            String dnState = CMRestAPI.matchRegex("HA_state.*: (.*)\\s+", cmdResult.resultString);
+            nodeStatus = new NodeStatus(nodeIp, cmServerState, dnRole, dnState);
         }
 
+        Gson clusterGson = new Gson();
+        String result = clusterGson.toJson(nodeStatus);
+        logger.info(result);
+        return ResponseEntity
+                .status(HttpStatus.OK)
+                .body(result);
+    }
+
+    /**
+     * @Title: getGrNodeStatus
+     * @Description:
+     * Receive get GR NodeStatus request. Return status of current node if nodeId is not provided.
+     * @param request
+     * @return
+     * ResponseEntity<String>
+     */
+    @GetMapping("/NodeStatus")
+    ResponseEntity<String> getGrNodeStatus(HttpServletRequest request) {
         Set<String> allowedParams = new HashSet<>();
-        allowedParams.add("nodeId");
         ResponseEntity<String> validationError = validateRequestParameters(request, allowedParams);
         if (validationError != null) {
             return validationError;
         }
 
-        if (nodeId == 0) {
-            nodeId = CMRestAPI.nodeId;
+        String clientIp = getClientIp(request);
+        logger.info("Received get GR node status request from {}", clientIp);
+        if (!checkAppWhiteList(clientIp)) {
+            logger.error(HttpStatus.UNAUTHORIZED.toString() + "client " + clientIp);
+            return buildErrorResponse(401, "Unauthorized access", HttpStatus.UNAUTHORIZED);
         }
-        CmdResult cmdResult;
-        if (CMRestAPI.isOGRecorder) {
-            cmdResult = ogCmdExcuter.getstatus();
-        } else {
-            cmdResult = ogCmdExcuter.getNodeStatus(nodeId);
-        }
+
+        CmdResult cmdResult = ogCmdExcuter.getstatus();
         if (cmdResult == null) {
             return buildErrorResponse(500, "Exec query command failed!", HttpStatus.INTERNAL_SERVER_ERROR);
         }
@@ -564,21 +596,12 @@ public class CMRestAPIServer {
             return buildErrorResponse(cmdResult.statusCode, errorMsg, HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
-        if (CMRestAPI.isOGRecorder) {
-            GrStatus grStatus = parseOGRecorderNodeStatus(cmdResult.resultString);
-            if (grStatus == null) {
-                return buildErrorResponse(500, "Failed to parse node status", HttpStatus.INTERNAL_SERVER_ERROR);
-            }
-            logger.info("Node status retrieved successfully");
-            return buildSuccessResponse(grStatus);
-        } else {
-            NodeStatus nodeStatus = parseNodeStatus(cmdResult.resultString);
-            if (nodeStatus == null) {
-                return buildErrorResponse(500, "Failed to parse node status", HttpStatus.INTERNAL_SERVER_ERROR);
-            }
-            logger.info("Node status retrieved successfully");
-            return buildSuccessResponse(nodeStatus);
+        GrStatus grStatus = parseOGRecorderNodeStatus(cmdResult.resultString);
+        if (grStatus == null) {
+            return buildErrorResponse(500, "Failed to parse node status", HttpStatus.INTERNAL_SERVER_ERROR);
         }
+        logger.info("Node status retrieved successfully");
+        return buildSuccessResponse(grStatus);
     }
 
     /**
@@ -603,7 +626,7 @@ public class CMRestAPIServer {
         if (resultString == null || resultString.trim().isEmpty()) {
             return null;
         }
-        Pattern pattern = Pattern.compile("value\\s+is\\s+([^\\.\\n]+)");
+        Pattern pattern = Pattern.compile("value\\s+is\\s+(.+)\\.", Pattern.DOTALL);
         Matcher matcher = pattern.matcher(resultString);
         if (matcher.find()) {
             return matcher.group(1).trim();
@@ -787,40 +810,27 @@ public class CMRestAPIServer {
             // Return default error status
             return new GrStatus(
                 CMRestAPI.hostIp != null ? CMRestAPI.hostIp : "unknown",
-                java.time.Instant.now().toString(),
-                "error",
-                new StatusInfo(0, "unknown"),
-                new StatusInfo(0, "unknown"),
-                0, 0,
-                new AnalysisInfo("unknown", "unknown", "unknown")
+                "unknown", "UNKNOWN", 0, 0, "unknown", "unknown"
             );
         }
-
-        // Parse node IP
         String node = CMRestAPI.hostIp != null ? CMRestAPI.hostIp : "unknown";
 
-        String instanceStateName = "open";
-        int instanceStatusId = 0; // GR_STATUS_OPEN = 0
-
-        String serverStateName = "UNKNOWN";
-        int serverStatusId = 0;
-        Pattern readWritePattern = Pattern.compile("is (.+? and (READONLY|READWRITE))");
-        Matcher readWriteMatcher = readWritePattern.matcher(resultString);
-        if (readWriteMatcher.find()) {
-            String fullStatus = readWriteMatcher.group(2);
-            if ("READWRITE".equals(fullStatus)) {
-                serverStateName = "READWRITE";
-                serverStatusId = 1;
-            } else if ("READONLY".equals(fullStatus)) {
-                serverStateName = "READONLY";
-                serverStatusId = 2;
-            }
+        String instanceStateName = "unknown";
+        Pattern instanceStatusPattern = Pattern.compile("is\\s+(\\w+)\\s+and");
+        Matcher instanceStatusMatcher = instanceStatusPattern.matcher(resultString);
+        if (instanceStatusMatcher.find()) {
+            instanceStateName = instanceStatusMatcher.group(1);
         }
 
-        // Parse instance ID and master ID
+        String serverStateName = "UNKNOWN";
+        Pattern serverStatusPattern = Pattern.compile("and\\s+(\\w+)");
+        Matcher serverStatusMatcher = serverStatusPattern.matcher(resultString);
+        if (serverStatusMatcher.find()) {
+            serverStateName = serverStatusMatcher.group(1);
+        }
+
         int localInstanceId = 0;
-        int masterId = 0;
-        String instanceIdStr = CMRestAPI.matchRegex("instance_id.*: (\\d+)", resultString);
+        String instanceIdStr = CMRestAPI.matchRegex("instance (\\d+)", resultString);
         if (instanceIdStr != null) {
             try {
                 localInstanceId = Integer.parseInt(instanceIdStr);
@@ -829,35 +839,34 @@ public class CMRestAPIServer {
             }
         }
 
-        // Parse analysis information
-        String instanceHealth = "healthy";
-        String readWriteMode = serverStateName.toLowerCase();
-        String nodeRole = "master";
+        int masterId = 0;
+        String masterIdStr = CMRestAPI.matchRegex("Master id is (\\d+)", resultString);
+        if (masterIdStr != null) {
+            try {
+                masterId = Integer.parseInt(masterIdStr);
+            } catch (NumberFormatException e) {
+                logger.warn("Failed to parse master_id: {}", masterIdStr);
+            }
+        }
 
-        if ("READWRITE".equals(serverStateName)) {
+        String maintainMode = "false";
+        String nodeRole = "primary";
+        // Determine node role based on server status
+        if ("READWRITE".equals(serverStateName) || "NORMAL".equals(serverStateName)) {
             nodeRole = "primary";
         } else if ("READONLY".equals(serverStateName)) {
             nodeRole = "standby";
         }
 
+        // Determine instance health based on GR_MAINTAIN
         if (resultString.contains("GR_MAINTAIN is TRUE")) {
-            instanceHealth = "maintaining";
+            maintainMode = "true";
+        } else if (resultString.contains("GR_MAINTAIN is FALSE")) {
+            maintainMode = "false";
         }
 
-        StatusInfo instanceStatus = new StatusInfo(instanceStatusId, instanceStateName);
-        StatusInfo serverStatus = new StatusInfo(serverStatusId, serverStateName);
-        AnalysisInfo analysis = new AnalysisInfo(instanceHealth, readWriteMode, nodeRole);
-
-        return new GrStatus(
-            node,
-            java.time.Instant.now().toString(),
-            "success",
-            instanceStatus,
-            serverStatus,
-            localInstanceId,
-            masterId,
-            analysis
-        );
+        return new GrStatus(node, instanceStateName, serverStateName, localInstanceId,
+            masterId, maintainMode, nodeRole);
     }
 
     /**
@@ -905,6 +914,10 @@ public class CMRestAPIServer {
                 .body("Register receive address successfully.");
     }
 
+    /**
+     * Stop REST API service
+     * This endpoint does not accept any parameters (query parameters or request body)
+     */
     @PostMapping("/stopRestApi")
     public ResponseEntity<String> stopRestApi(HttpServletRequest request) {
         String clientIp = getClientIp(request);
@@ -914,10 +927,24 @@ public class CMRestAPIServer {
             return buildErrorResponse(401, "Unauthorized access", HttpStatus.UNAUTHORIZED);
         }
 
+        // Reject any query parameters - this endpoint accepts no parameters
         Set<String> allowedParams = new HashSet<>();
         ResponseEntity<String> validationError = validateRequestParameters(request, allowedParams);
         if (validationError != null) {
             return validationError;
+        }
+
+        // Reject request body if present (optional additional check)
+        // Note: getContentLength() returns -1 if length is unknown, which we allow
+        try {
+            int contentLength = request.getContentLength();
+            if (contentLength > 0) {
+                return buildErrorResponse(400, "This endpoint does not accept request body. " +
+                    "Please send an empty POST request.",
+                    HttpStatus.BAD_REQUEST);
+            }
+        } catch (Exception e) {
+            logger.warn("Error checking request content length: {}", e.getMessage());
         }
 
         logger.info("Received graceful shutdown request");
@@ -1287,91 +1314,6 @@ public class CMRestAPIServer {
         stats.setTotalSize(totalSize);
 
         return stats;
-    }
-
-    @GetMapping("/logStatus")
-    ResponseEntity<String> getLogStats(HttpServletRequest request) {
-        String clientIp = getClientIp(request);
-        logger.info("Received get log status request from {}", clientIp);
-
-        if (!checkAppWhiteList(clientIp)) {
-            logger.error(HttpStatus.UNAUTHORIZED.toString() + "client " + clientIp);
-            return buildErrorResponse(401, "Unauthorized access", HttpStatus.UNAUTHORIZED);
-        }
-
-        Set<String> allowedParams = new HashSet<>();
-        ResponseEntity<String> validationError = validateRequestParameters(request, allowedParams);
-        if (validationError != null) {
-            return validationError;
-        }
-
-        try {
-            CmdResult setResult = ogCmdExcuter.getGrConfig("DATA_FILE_PATH");
-            String path = parseConfigValue(setResult.resultString);
-            if (path == null || path.trim().isEmpty()) {
-                String grHome = System.getenv("GR_HOME");
-                if (grHome == null || grHome.trim().isEmpty()) {
-                    return buildErrorResponse(500, "GR_HOME is not set!",
-                                            HttpStatus.INTERNAL_SERVER_ERROR);
-                }
-                String cfgPath = Paths.get(grHome, "cfg", "gr_inst.ini").toString();
-                if (!Files.exists(Paths.get(cfgPath))) {
-                    return buildErrorResponse(500, "gr_inst.ini does not exist: " + cfgPath,
-                                            HttpStatus.INTERNAL_SERVER_ERROR);
-                }
-                String cfgContent = Files.readString(Paths.get(cfgPath));
-                logger.info("cfgContent: " + cfgContent);
-                String value = parseGrConfigValueByFileContent(cfgContent, "DATA_FILE_PATH");
-                if (value == null || value.trim().isEmpty()) {
-                    return buildErrorResponse(500, "DATA_FILE_PATH variable is not set in gr_inst.ini!",
-                                            HttpStatus.INTERNAL_SERVER_ERROR);
-                }
-                path = value;
-            }
-
-            Path logDir = Paths.get(path);
-            if (!Files.exists(logDir) || !Files.isDirectory(logDir)) {
-                return buildErrorResponse(500, "DATA_FILE_PATH directory does not exist: " + path,
-                                        HttpStatus.INTERNAL_SERVER_ERROR);
-            }
-
-            LogStats totalStats = new LogStats();
-            totalStats.setDirectoryName("TOTAL");
-            totalStats.setDirectoryPath(path);
-
-            List<DirectoryStats> directoryStatsList = new ArrayList<>();
-            try (java.util.stream.Stream<Path> stream = Files.list(logDir)) {
-                java.util.Iterator<Path> iterator = stream.iterator();
-                while (iterator.hasNext()) {
-                    Path subPath = iterator.next();
-                    if (Files.isDirectory(subPath)) {
-                        DirectoryStats dirStats = calculateDirectoryStats(subPath, logDir);
-                        directoryStatsList.add(dirStats);
-                        totalStats.setFileCount(totalStats.getFileCount() + dirStats.getFileCount());
-                        totalStats.setTotalSize(totalStats.getTotalSize() + dirStats.getTotalSize());
-                    }
-                }
-            }
-
-            directoryStatsList.sort((d1, d2) -> Long.compare(d2.getFileCount(), d1.getFileCount()));
-
-            LogStatsResponse response = new LogStatsResponse();
-            response.setTotalStats(totalStats);
-            response.setDirectoryStats(directoryStatsList);
-            response.setTotalDirectories(directoryStatsList.size());
-
-            logger.info("Returned statistics for {} directories, total files: {}, total size: {}",
-                    directoryStatsList.size(), totalStats.getFileCount(), totalStats.getTotalSize());
-
-            return buildSuccessResponse(response);
-        } catch (IOException e) {
-            logger.error("Failed to read directory for statistics: {}", e.getMessage());
-            return buildErrorResponse(500, "Failed to read directory for statistics: " + e.getMessage(),
-                                    HttpStatus.INTERNAL_SERVER_ERROR);
-        } catch (Exception e) {
-            logger.error("Unexpected error while getting log statistics: {}", e.getMessage());
-            return buildErrorResponse(500, "Unexpected error: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
-        }
     }
 
     @GetMapping("/wormStatus")

@@ -22,7 +22,14 @@ git clone https://gitcode.com/opengauss/CM-RestAPI.git
 3.  通过脚本编译获取安装包，执行后会在./CM-RestAPI/target目录下生成jar包。
 
 ```
-sh ./CM-RestAPI/build.sh
+cd ./CM-RestAPI
+sh build.sh
+```
+
+4.  如果某些参数中需要传入特殊字符，如“ < > 等，需要在application.properties中添加对应配置，然后再编译。参考如下：
+
+```
+server.tomcat.relaxed-query-chars=\",<,>
 ```
 
 #### 环境配置
