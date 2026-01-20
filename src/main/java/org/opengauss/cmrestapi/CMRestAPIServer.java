@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import com.google.gson.Gson;
@@ -87,6 +88,11 @@ public class CMRestAPIServer {
             "HTTP_VIA",
             "REMOTE_ADDR"
     };
+
+    /**
+     * Pattern for validating string parameters: only allows a-z, A-Z, 0-9, -, _
+     */
+    private static final Pattern STRING_PARAMETER_PATTERN = Pattern.compile("^[-a-zA-Z_0-9]+$");
 
     /**
      * @Title: NodeStatus
@@ -233,6 +239,30 @@ public class CMRestAPIServer {
             }
         }
         return null;
+    }
+
+    /**
+     * @Title: validateStringParameter
+     * @Description:
+     * Validate that string parameter only contains allowed characters: a-z, A-Z, -, _.
+     * @param paramValue The string parameter value to validate
+     * @param paramName The name of the parameter (for error message)
+     * @return ResponseEntity with error if validation fails, null if valid
+     */
+    private Optional<ResponseEntity<String>> validateStringParameter(String paramValue, String paramName) {
+        if (paramValue == null) {
+            return Optional.of(buildErrorResponse(400,
+                "Parameter " + paramName + " is null",
+                HttpStatus.BAD_REQUEST));
+        }
+
+        if (!STRING_PARAMETER_PATTERN.matcher(paramValue).matches()) {
+            return Optional.of(buildErrorResponse(400,
+                "Invalid param",
+                HttpStatus.BAD_REQUEST));
+        }
+
+        return Optional.empty();
     }
 
     /**
@@ -1037,6 +1067,12 @@ public class CMRestAPIServer {
             return validationError;
         }
 
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter")
+            .or(() -> validateStringParameter(sortBy, "sortBy"));
+        if (stringValidationError.isPresent()) {
+            return stringValidationError.get();
+        }
+
         if (maxResults <= 0) {
             return buildErrorResponse(400, "maxResults must be greater than 0", HttpStatus.BAD_REQUEST);
         }
@@ -1163,6 +1199,12 @@ public class CMRestAPIServer {
         if (!sortBy.equals("time") && !sortBy.equals("size") && !sortBy.equals("path")
                 && !sortBy.equals("name") && !sortBy.equals("none")) {
             return buildErrorResponse(400, "sortBy must be time, size, path, name or none", HttpStatus.BAD_REQUEST);
+        }
+
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter")
+            .or(() -> validateStringParameter(sortBy, "sortBy"));
+        if (stringValidationError.isPresent()) {
+            return stringValidationError.get();
         }
 
         try {
@@ -1424,9 +1466,11 @@ public class CMRestAPIServer {
             return validationError;
         }
 
-        if (file == null || file.trim().isEmpty()) {
-            return buildErrorResponse(400, "file is required", HttpStatus.BAD_REQUEST);
+        Optional<ResponseEntity<String>> fileValidationError = validateStringParameter(file, "file");
+        if (fileValidationError.isPresent()) {
+            return fileValidationError.get();
         }
+
         if (offset <= 0) {
             return buildErrorResponse(400, "offset must be greater than 0", HttpStatus.BAD_REQUEST);
         }
@@ -1605,6 +1649,12 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "invalid mode", HttpStatus.BAD_REQUEST);
         }
 
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode")
+            .or(() -> validateStringParameter(name, "name"));
+        if (stringValidationError.isPresent()) {
+            return stringValidationError.get();
+        }
+
         // Trim name and value to avoid leading/trailing spaces
         String trimmedName = name.trim();
         String trimmedValue = (value != null) ? value.trim() : "";
@@ -1650,8 +1700,12 @@ public class CMRestAPIServer {
         if (validationError != null) {
             return validationError;
         }
+        Optional<ResponseEntity<String>> modeValidationError = validateStringParameter(mode, "mode");
+        if (modeValidationError.isPresent()) {
+            return modeValidationError.get();
+        }
 
-        if ((mode == null || mode.trim().isEmpty()) || (!mode.equals("agent") && !mode.equals("server"))) {
+        if (!mode.equals("agent") && !mode.equals("server")) {
             return buildErrorResponse(400, "invalid mode, must be 'agent' or 'server'", HttpStatus.BAD_REQUEST);
         }
 
@@ -1697,6 +1751,11 @@ public class CMRestAPIServer {
 
         if (name == null || name.trim().isEmpty()) {
             return buildErrorResponse(400, "name is NULL or empty", HttpStatus.BAD_REQUEST);
+        }
+
+        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name");
+        if (nameValidationError.isPresent()) {
+            return nameValidationError.get();
         }
 
         try {
@@ -1746,6 +1805,12 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "invalid mode", HttpStatus.BAD_REQUEST);
         }
 
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode")
+            .or(() -> validateStringParameter(name, "name"));
+        if (stringValidationError.isPresent()) {
+            return stringValidationError.get();
+        }
+
         try {
             CmdResult cmdResult = ogCmdExcuter.getCmConfig(mode, name);
             if (cmdResult.statusCode != 0) {
@@ -1789,8 +1854,9 @@ public class CMRestAPIServer {
             return validationError;
         }
 
-        if (name == null || name.trim().isEmpty()) {
-            return buildErrorResponse(400, "name is required", HttpStatus.BAD_REQUEST);
+        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name");
+        if (nameValidationError.isPresent()) {
+            return nameValidationError.get();
         }
 
         try {
@@ -1835,6 +1901,11 @@ public class CMRestAPIServer {
                     "Unknown parameter: " + paramName + ". Only node parameter is allowed.",
                     HttpStatus.BAD_REQUEST);
             }
+        }
+
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        if (nodeValidationError.isPresent()) {
+            return nodeValidationError.get();
         }
 
         try {
@@ -1886,6 +1957,11 @@ public class CMRestAPIServer {
             }
         }
 
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        if (nodeValidationError.isPresent()) {
+            return nodeValidationError.get();
+        }
+
         try {
             CmdResult cmdResult;
             if (node.trim().isEmpty()) {
@@ -1935,8 +2011,9 @@ public class CMRestAPIServer {
             }
         }
 
-        if (node.trim().isEmpty()) {
-            return buildErrorResponse(400, "Node parameter is required", HttpStatus.BAD_REQUEST);
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        if (nodeValidationError.isPresent()) {
+            return nodeValidationError.get();
         }
 
         try {
