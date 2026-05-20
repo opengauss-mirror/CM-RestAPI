@@ -14,6 +14,8 @@
  */
 package org.opengauss.cmrestapi;
 
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -49,6 +51,7 @@ import java.nio.charset.StandardCharsets;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Optional;
@@ -66,15 +69,6 @@ import com.google.gson.Gson;
 @RestController
 @RequestMapping("/CMRestAPI")
 public class CMRestAPIServer {
-    @Autowired
-    private ApplicationContext context;
-    private final String UNKNOWN = "unknown";
-    private final String LOCALHOST = "127.0.0.1";
-    private final String LOCALHOST_IPV6 = "0:0:0:0:0:0:0:1";
-    private final String SEPARATOR = ",";
-    private Logger logger = LoggerFactory.getLogger(CMRestAPIServer.class);
-    private OGCmdExecuter ogCmdExcuter = new OGCmdExecuter(CMRestAPI.envFile);
-
     private static final String[] IP_HEADER_CANDIDATES = {
             "X-Forwarded-For",
             "Proxy-Client-IP",
@@ -93,6 +87,20 @@ public class CMRestAPIServer {
      * Pattern for validating string parameters: only allows a-z, A-Z, 0-9, -, _
      */
     private static final Pattern STRING_PARAMETER_PATTERN = Pattern.compile("^[-a-zA-Z_0-9]+$");
+    private static final String NODE_METRICS_INITIALIZING_MSG = "Node metrics are initializing";
+    private static final String NODE_MEMORY_READ_FAILED_MSG = "Failed to read node memory metrics";
+    private static final String NODE_CPU_READ_FAILED_MSG = "Failed to read node CPU metrics";
+    private static final String NODE_NFS_READ_FAILED_MSG = "Failed to read node NFS I/O metrics";
+
+    @Autowired
+    private ApplicationContext context;
+    private final String UNKNOWN = "unknown";
+    private final String LOCALHOST = "127.0.0.1";
+    private final String LOCALHOST_IPV6 = "0:0:0:0:0:0:0:1";
+    private final String SEPARATOR = ",";
+    private Logger logger = LoggerFactory.getLogger(CMRestAPIServer.class);
+    private OGCmdExecuter ogCmdExcuter = new OGCmdExecuter(CMRestAPI.envFile);
+    private final NodeMetricCollector metricCollector = new NodeMetricCollector();
 
     /**
      * @Title: NodeStatus
@@ -112,6 +120,48 @@ public class CMRestAPIServer {
             this.dnRole = dnRole;
             this.dnState = dnState;
         }
+    }
+
+    class NodeMemoryResponse {
+        int nodeId;
+        NodeMetricCollector.MemoryDetail memory;
+
+        NodeMemoryResponse(int nodeId, NodeMetricCollector.MemoryDetail memory) {
+            this.nodeId = nodeId;
+            this.memory = memory;
+        }
+    }
+
+    class NodeCpuResponse {
+        int nodeId;
+        NodeMetricCollector.CpuBreakdown cpu;
+
+        NodeCpuResponse(int nodeId, NodeMetricCollector.CpuBreakdown cpu) {
+            this.nodeId = nodeId;
+            this.cpu = cpu;
+        }
+    }
+
+    class NodeNfsIoResponse {
+        int nodeId;
+        Map<String, NodeMetricCollector.NfsMountIoDetail> nfsIoByMount;
+
+        NodeNfsIoResponse(int nodeId, Map<String, NodeMetricCollector.NfsMountIoDetail> nfsIoByMount) {
+            this.nodeId = nodeId;
+            this.nfsIoByMount = nfsIoByMount;
+        }
+    }
+
+    @PostConstruct
+    public void initNodeMetricCollector() {
+        metricCollector.start();
+        logger.info("Started node metric collector thread.");
+    }
+
+    @PreDestroy
+    public void stopNodeMetricCollector() {
+        metricCollector.stop();
+        logger.info("Stopped node metric collector thread.");
     }
 
     /**
@@ -244,15 +294,20 @@ public class CMRestAPIServer {
     /**
      * @Title: validateStringParameter
      * @Description:
-     * Validate that string parameter only contains allowed characters: a-z, A-Z, -, _.
+     * Validate that string parameter only contains allowed characters: a-z, A-Z, 0-9, -, _.
      * @param paramValue The string parameter value to validate
      * @param paramName The name of the parameter (for error message)
-     * @return ResponseEntity with error if validation fails, null if valid
+     * @param isAllowEmpty If true, null or empty string is accepted and no pattern check is applied for that case
+     * @return ResponseEntity with error if validation fails, empty if valid
      */
-    private Optional<ResponseEntity<String>> validateStringParameter(String paramValue, String paramName) {
-        if (paramValue == null) {
+    private Optional<ResponseEntity<String>> validateStringParameter(String paramValue, String paramName,
+        boolean isAllowEmpty) {
+        if (isAllowEmpty && (paramValue == null || paramValue.isEmpty())) {
+            return Optional.empty();
+        }
+        if (paramValue == null || paramValue.isEmpty()) {
             return Optional.of(buildErrorResponse(400,
-                "Parameter " + paramName + " is null",
+                "Parameter " + paramName + " is null or empty",
                 HttpStatus.BAD_REQUEST));
         }
 
@@ -664,6 +719,7 @@ public class CMRestAPIServer {
         return null;
     }
 
+
     /**
      * @Title: parseCmConfigValue
      * @Description:
@@ -702,6 +758,104 @@ public class CMRestAPIServer {
         }
 
         return null;
+    }
+
+    /**
+     * Local node metrics only: no query parameters; same whitelist as other CMRestAPI endpoints.
+     *
+     * @param request HTTP request
+     * @return error response if validation fails, or empty if the request is allowed
+     */
+    private Optional<ResponseEntity<String>> validateLocalNodeMetricRequest(HttpServletRequest request) {
+        ResponseEntity<String> validationError = validateRequestParameters(request, Collections.emptySet());
+        if (validationError != null) {
+            return Optional.of(validationError);
+        }
+        String clientIp = getClientIp(request);
+        if (!checkAppWhiteList(clientIp)) {
+            logger.error(HttpStatus.UNAUTHORIZED.toString() + "client " + clientIp);
+            return Optional.of(buildErrorResponse(401, "Unauthorized access", HttpStatus.UNAUTHORIZED));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * @Title: getNodeMemory
+     * @Description: Memory detail (kB) for this REST process node only, similar to {@code free}. No query parameters.
+     */
+    @GetMapping("/NodeMemory")
+    public ResponseEntity<String> getNodeMemory(HttpServletRequest request) {
+        Optional<ResponseEntity<String>> err = validateLocalNodeMetricRequest(request);
+        if (err.isPresent()) {
+            return err.get();
+        }
+        logger.info("Received get node memory request from {}", getClientIp(request));
+        Optional<NodeMetricCollector.NodeMetric> snapshotOpt = metricCollector.getLatestMetric();
+        if (!snapshotOpt.isPresent()) {
+            return buildErrorResponse(503, NODE_METRICS_INITIALIZING_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        NodeMetricCollector.NodeMetric snapshot = snapshotOpt.get();
+        if (snapshot.isCheckMemorySourceFailed) {
+            return buildErrorResponse(503, NODE_MEMORY_READ_FAILED_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        if (snapshot.memoryDetail == null) {
+            return buildErrorResponse(503, NODE_METRICS_INITIALIZING_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        int nodeId = CMRestAPI.nodeId;
+        logger.info("Node memory retrieved successfully, nodeId={}", nodeId);
+        return buildSuccessResponse(new NodeMemoryResponse(nodeId, snapshot.memoryDetail));
+    }
+
+    /**
+     * @Title: getNodeCpu
+     * @Description: Aggregate CPU time breakdown (%) for this REST process node only. No query parameters.
+     */
+    @GetMapping("/NodeCpu")
+    public ResponseEntity<String> getNodeCpu(HttpServletRequest request) {
+        Optional<ResponseEntity<String>> err = validateLocalNodeMetricRequest(request);
+        if (err.isPresent()) {
+            return err.get();
+        }
+        logger.info("Received get node cpu request from {}", getClientIp(request));
+        Optional<NodeMetricCollector.NodeMetric> snapshotOpt = metricCollector.getLatestMetric();
+        if (!snapshotOpt.isPresent()) {
+            return buildErrorResponse(503, NODE_METRICS_INITIALIZING_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        NodeMetricCollector.NodeMetric snapshot = snapshotOpt.get();
+        if (snapshot.isCheckCpuSourceFailed) {
+            return buildErrorResponse(503, NODE_CPU_READ_FAILED_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        if (snapshot.cpuBreakdown == null) {
+            return buildErrorResponse(503, NODE_METRICS_INITIALIZING_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        int nodeId = CMRestAPI.nodeId;
+        logger.info("Node cpu retrieved successfully, nodeId={}", nodeId);
+        return buildSuccessResponse(new NodeCpuResponse(nodeId, snapshot.cpuBreakdown));
+    }
+
+    /**
+     * @Title: getNodeNfsIo
+     * @Description: NFS mounts on this REST process node only: nfsiostat-style detail (~1s): rpc ops/s, rpc bklog,
+     *               READ/WRITE ops/s, kB/s, kB/op, retrans, avg RTT/exe/queue (ms), errors. No query parameters.
+     */
+    @GetMapping("/NodeNfsIo")
+    public ResponseEntity<String> getNodeNfsIo(HttpServletRequest request) {
+        Optional<ResponseEntity<String>> err = validateLocalNodeMetricRequest(request);
+        if (err.isPresent()) {
+            return err.get();
+        }
+        int nodeId = CMRestAPI.nodeId;
+        logger.info("Received get node nfs io request from {}", getClientIp(request));
+        Optional<NodeMetricCollector.NodeMetric> snapshotOpt = metricCollector.getLatestMetric();
+        if (!snapshotOpt.isPresent()) {
+            return buildErrorResponse(503, NODE_METRICS_INITIALIZING_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        NodeMetricCollector.NodeMetric snapshot = snapshotOpt.get();
+        if (snapshot.isCheckNfsSourceFailed) {
+            return buildErrorResponse(503, NODE_NFS_READ_FAILED_MSG, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        logger.info("Node nfs io retrieved successfully, nodeId={}", nodeId);
+        return buildSuccessResponse(new NodeNfsIoResponse(nodeId, snapshot.nfsIoByMount));
     }
 
     private String parseGrConfigValueByFileContent(String resultString, String key) {
@@ -1067,8 +1221,8 @@ public class CMRestAPIServer {
             return validationError;
         }
 
-        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter")
-            .or(() -> validateStringParameter(sortBy, "sortBy"));
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter", true)
+            .or(() -> validateStringParameter(sortBy, "sortBy", true));
         if (stringValidationError.isPresent()) {
             return stringValidationError.get();
         }
@@ -1201,8 +1355,8 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "sortBy must be time, size, path, name or none", HttpStatus.BAD_REQUEST);
         }
 
-        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter")
-            .or(() -> validateStringParameter(sortBy, "sortBy"));
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(filter, "filter", true)
+            .or(() -> validateStringParameter(sortBy, "sortBy", true));
         if (stringValidationError.isPresent()) {
             return stringValidationError.get();
         }
@@ -1466,7 +1620,7 @@ public class CMRestAPIServer {
             return validationError;
         }
 
-        Optional<ResponseEntity<String>> fileValidationError = validateStringParameter(file, "file");
+        Optional<ResponseEntity<String>> fileValidationError = validateStringParameter(file, "file", false);
         if (fileValidationError.isPresent()) {
             return fileValidationError.get();
         }
@@ -1649,8 +1803,8 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "invalid mode", HttpStatus.BAD_REQUEST);
         }
 
-        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode")
-            .or(() -> validateStringParameter(name, "name"));
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode", false)
+            .or(() -> validateStringParameter(name, "name", false));
         if (stringValidationError.isPresent()) {
             return stringValidationError.get();
         }
@@ -1700,7 +1854,7 @@ public class CMRestAPIServer {
         if (validationError != null) {
             return validationError;
         }
-        Optional<ResponseEntity<String>> modeValidationError = validateStringParameter(mode, "mode");
+        Optional<ResponseEntity<String>> modeValidationError = validateStringParameter(mode, "mode", false);
         if (modeValidationError.isPresent()) {
             return modeValidationError.get();
         }
@@ -1753,7 +1907,7 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "name is NULL or empty", HttpStatus.BAD_REQUEST);
         }
 
-        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name");
+        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name", false);
         if (nameValidationError.isPresent()) {
             return nameValidationError.get();
         }
@@ -1805,8 +1959,8 @@ public class CMRestAPIServer {
             return buildErrorResponse(400, "invalid mode", HttpStatus.BAD_REQUEST);
         }
 
-        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode")
-            .or(() -> validateStringParameter(name, "name"));
+        Optional<ResponseEntity<String>> stringValidationError = validateStringParameter(mode, "mode", false)
+            .or(() -> validateStringParameter(name, "name", false));
         if (stringValidationError.isPresent()) {
             return stringValidationError.get();
         }
@@ -1854,7 +2008,7 @@ public class CMRestAPIServer {
             return validationError;
         }
 
-        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name");
+        Optional<ResponseEntity<String>> nameValidationError = validateStringParameter(name, "name", false);
         if (nameValidationError.isPresent()) {
             return nameValidationError.get();
         }
@@ -1903,7 +2057,7 @@ public class CMRestAPIServer {
             }
         }
 
-        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node", true);
         if (nodeValidationError.isPresent()) {
             return nodeValidationError.get();
         }
@@ -1957,7 +2111,7 @@ public class CMRestAPIServer {
             }
         }
 
-        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node", true);
         if (nodeValidationError.isPresent()) {
             return nodeValidationError.get();
         }
@@ -2011,7 +2165,7 @@ public class CMRestAPIServer {
             }
         }
 
-        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node");
+        Optional<ResponseEntity<String>> nodeValidationError = validateStringParameter(node, "node", false);
         if (nodeValidationError.isPresent()) {
             return nodeValidationError.get();
         }
